@@ -47,5 +47,16 @@ void main() {
 
       expect(output, equals('\x1B[32;1;1M'));
     });
+
+    test('report() supports sgr motion', () {
+      final output = MouseReporter.report(
+        TerminalMouseButton.left,
+        TerminalMouseButtonState.motion,
+        CellOffset(4, 2),
+        MouseReportMode.sgr,
+      );
+
+      expect(output, equals('\x1B[<32;5;3M'));
+    });
   });
 }

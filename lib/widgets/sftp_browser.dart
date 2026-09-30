@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 
 import '../services/ssh_session.dart';
@@ -116,8 +117,6 @@ class _SftpBrowserState extends State<SftpBrowser> {
     final files = await FilePicker.pickFiles();
     if (files.isEmpty) return;
     final file = files.first;
-    final localPath = file.path;
-    if (localPath == null) return;
 
     final remotePath = _joinPath(_currentPath, file.name);
     setState(() {
@@ -133,7 +132,11 @@ class _SftpBrowserState extends State<SftpBrowser> {
             SftpFileOpenMode.write,
       );
       try {
-        final writer = await remote.write(File(localPath).openRead().cast());
+        // Android 上 path 可能为空，优先流式读取 PlatformFile
+        final Stream<List<int>> source = file.path != null
+            ? File(file.path!).openRead()
+            : file.readAsByteStream();
+        final writer = await remote.write(source.cast());
         await writer.done;
       } finally {
         await remote.close();
@@ -158,13 +161,30 @@ class _SftpBrowserState extends State<SftpBrowser> {
     }
   }
 
+  Future<String?> _resolveDownloadDir() async {
+    try {
+      return await FilePicker.getDirectoryPath(
+        dialogTitle: '选择保存目录',
+      );
+    } catch (_) {
+      // 部分机型目录选择器异常时，回退到应用文档目录
+      if (Platform.isAndroid || Platform.isIOS) {
+        final docs = await getApplicationDocumentsDirectory();
+        final downloads = Directory('${docs.path}/Downloads');
+        if (!await downloads.exists()) {
+          await downloads.create(recursive: true);
+        }
+        return downloads.path;
+      }
+      return null;
+    }
+  }
+
   Future<void> _download(SftpName entry) async {
     final sftp = _sftp;
     if (sftp == null) return;
 
-    final directory = await FilePicker.getDirectoryPath(
-      dialogTitle: '选择保存目录',
-    );
+    final directory = await _resolveDownloadDir();
     if (directory == null) return;
 
     final savePath = '$directory${Platform.pathSeparator}${entry.filename}';

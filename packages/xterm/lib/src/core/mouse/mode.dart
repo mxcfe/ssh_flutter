@@ -14,6 +14,10 @@ enum MouseMode {
   const MouseMode({this.reportScroll = false});
 
   final bool reportScroll;
+
+  /// Whether drag/move motion events should be reported (DECSET 1002 / 1003).
+  bool get reportMotion =>
+      this == MouseMode.upDownScrollDrag || this == MouseMode.upDownScrollMove;
 }
 
 /// https://terminalguide.namepad.de/mouse/

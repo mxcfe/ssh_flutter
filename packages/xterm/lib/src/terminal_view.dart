@@ -265,8 +265,16 @@ class TerminalViewState extends State<TerminalView> {
         onComposing: _onComposing,
         onAction: (action) {
           _scrollToBottom();
-          if (action == TextInputAction.done) {
-            widget.terminal.keyInput(TerminalKey.enter);
+          // 手机软键盘回车多为 newline/send/go，仅处理 done 会导致无响应
+          switch (action) {
+            case TextInputAction.newline:
+            case TextInputAction.done:
+            case TextInputAction.send:
+            case TextInputAction.go:
+            case TextInputAction.search:
+              widget.terminal.keyInput(TerminalKey.enter);
+            default:
+              break;
           }
         },
         onKeyEvent: _handleKeyEvent,
@@ -372,7 +380,17 @@ class TerminalViewState extends State<TerminalView> {
   }
 
   void _onInsert(String text) {
-    final key = charToTerminalKey(text.trim());
+    if (text.isEmpty) return;
+
+    // 软键盘可能以文本形式插入换行，而不是 TextInputAction
+    if (text == '\n' || text == '\r' || text == '\r\n') {
+      widget.terminal.keyInput(TerminalKey.enter);
+      _scrollToBottom();
+      return;
+    }
+
+    // 不要 trim：否则单独的 \n 会被吃掉，含空格的输入也会失真
+    final key = text.length == 1 ? charToTerminalKey(text) : null;
 
     // On mobile platforms there is no guarantee that virtual keyboard will
     // generate hardware key events. So we need first try to send the key

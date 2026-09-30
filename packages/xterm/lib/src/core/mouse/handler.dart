@@ -96,19 +96,29 @@ class UpDownMouseHandler implements TerminalMouseHandler {
       case MouseMode.clickOnly:
         return null;
       case MouseMode.upDownScroll:
-      case MouseMode.upDownScrollDrag:
-      case MouseMode.upDownScrollMove:
-        // Up events are never reported for mouse wheel buttons.
-        if (event.button.isWheel &&
-            event.buttonState == TerminalMouseButtonState.up) {
+        // Mode 1000: press / release / wheel only — no drag motion.
+        if (event.buttonState == TerminalMouseButtonState.motion) {
           return null;
         }
-        return MouseReporter.report(
-          event.button,
-          event.buttonState,
-          event.position,
-          event.state.mouseReportMode,
-        );
+        break;
+      case MouseMode.upDownScrollDrag:
+        // Mode 1002: press / release / wheel / drag-with-button.
+        break;
+      case MouseMode.upDownScrollMove:
+        // Mode 1003: also reports motion with no buttons held.
+        break;
     }
+
+    // Up events are never reported for mouse wheel buttons.
+    if (event.button.isWheel &&
+        event.buttonState == TerminalMouseButtonState.up) {
+      return null;
+    }
+    return MouseReporter.report(
+      event.button,
+      event.buttonState,
+      event.position,
+      event.state.mouseReportMode,
+    );
   }
 }

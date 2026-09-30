@@ -59,7 +59,11 @@ class SessionScreen extends StatelessWidget {
                   ],
                 ),
               )
-            : (isTerminal ? const AppTerminalView() : const SftpBrowser()),
+            : SafeArea(
+                child: isTerminal
+                    ? const AppTerminalView()
+                    : const SftpBrowser(),
+              ),
       ),
     );
   }
