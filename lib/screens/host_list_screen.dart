@@ -32,14 +32,18 @@ class _HostListScreenState extends State<HostListScreen> {
     }
   }
 
-  Future<void> _connect(HostProfile host) async {
+  /// 已保存密码则直接返回；否则弹窗输入一次。
+  Future<String?> _resolvePassword(HostProfile host) async {
     final controller = context.read<HostListController>();
     final savedPassword = await controller.getPassword(host.id);
+    if (!mounted) return null;
 
-    if (!mounted) return;
+    if (savedPassword != null && savedPassword.isNotEmpty) {
+      return savedPassword;
+    }
 
-    final passwordController = TextEditingController(text: savedPassword ?? '');
-    var remember = savedPassword != null && savedPassword.isNotEmpty;
+    final passwordController = TextEditingController();
+    var remember = true;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -56,17 +60,18 @@ class _HostListScreenState extends State<HostListScreen> {
                   TextField(
                     controller: passwordController,
                     obscureText: true,
+                    autofocus: true,
                     decoration: const InputDecoration(
                       labelText: '密码',
                       border: OutlineInputBorder(),
                     ),
-                    autofocus: savedPassword == null || savedPassword.isEmpty,
                   ),
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
                     title: const Text('记住密码'),
                     value: remember,
-                    onChanged: (v) => setDialogState(() => remember = v ?? true),
+                    onChanged: (v) =>
+                        setDialogState(() => remember = v ?? true),
                   ),
                 ],
               ),
@@ -88,7 +93,7 @@ class _HostListScreenState extends State<HostListScreen> {
 
     if (confirmed != true || !mounted) {
       passwordController.dispose();
-      return;
+      return null;
     }
 
     final password = passwordController.text;
@@ -99,8 +104,12 @@ class _HostListScreenState extends State<HostListScreen> {
       password: password,
       rememberPassword: remember,
     );
+    return password;
+  }
 
-    if (!mounted) return;
+  Future<void> _connect(HostProfile host, SessionMode mode) async {
+    final password = await _resolvePassword(host);
+    if (password == null || !mounted) return;
 
     showDialog<void>(
       context: context,
@@ -124,11 +133,11 @@ class _HostListScreenState extends State<HostListScreen> {
 
     final session = context.read<SshSession>();
     try {
-      await session.connect(host, password);
+      await session.connect(host, password, mode: mode);
       if (!mounted) return;
       Navigator.of(context).pop();
       await Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const SessionScreen()),
+        MaterialPageRoute(builder: (_) => SessionScreen(mode: mode)),
       );
       await session.disconnect();
     } catch (e) {
@@ -148,7 +157,10 @@ class _HostListScreenState extends State<HostListScreen> {
         title: const Text('删除主机'),
         content: Text('确定删除「${host.displayTitle}」吗？已保存的密码也会一并删除。'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('删除'),
@@ -213,15 +225,25 @@ class _HostListScreenState extends State<HostListScreen> {
               leading: const CircleAvatar(child: Icon(Icons.computer)),
               title: Text(host.displayTitle),
               subtitle: Text(host.subtitle),
-              onTap: () => _connect(host),
-              trailing: PopupMenuButton<String>(
-                onSelected: (value) {
-                  if (value == 'edit') _openEditor(host: host);
-                  if (value == 'delete') _delete(host);
-                },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'edit', child: Text('编辑')),
-                  PopupMenuItem(value: 'delete', child: Text('删除')),
+              onTap: () => _connect(host, SessionMode.terminal),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'SFTP 文件管理',
+                    icon: const Icon(Icons.folder_open),
+                    onPressed: () => _connect(host, SessionMode.sftp),
+                  ),
+                  PopupMenuButton<String>(
+                    onSelected: (value) {
+                      if (value == 'edit') _openEditor(host: host);
+                      if (value == 'delete') _delete(host);
+                    },
+                    itemBuilder: (_) => const [
+                      PopupMenuItem(value: 'edit', child: Text('编辑')),
+                      PopupMenuItem(value: 'delete', child: Text('删除')),
+                    ],
+                  ),
                 ],
               ),
             ),

@@ -13,6 +13,11 @@ enum SshConnectionState {
   error,
 }
 
+enum SessionMode {
+  terminal,
+  sftp,
+}
+
 class SshSession extends ChangeNotifier {
   SSHClient? _client;
   SSHSession? _shell;
@@ -23,21 +28,38 @@ class SshSession extends ChangeNotifier {
   SshConnectionState _state = SshConnectionState.disconnected;
   String? _errorMessage;
   HostProfile? _currentHost;
+  SessionMode? _mode;
+  String? _pendingCd;
 
   final _terminalOutputController = StreamController<String>.broadcast();
 
   SshConnectionState get state => _state;
   String? get errorMessage => _errorMessage;
   HostProfile? get currentHost => _currentHost;
+  SessionMode? get mode => _mode;
   bool get isConnected => _state == SshConnectionState.connected;
   SSHSession? get shell => _shell;
   SftpClient? get sftp => _sftp;
   Stream<String> get terminalOutput => _terminalOutputController.stream;
 
-  Future<void> connect(HostProfile host, String password) async {
+  /// 取出并清空待执行的 cd 路径（终端启动后调用一次）。
+  String? takePendingCd() {
+    final path = _pendingCd;
+    _pendingCd = null;
+    return path;
+  }
+
+  Future<void> connect(
+    HostProfile host,
+    String password, {
+    required SessionMode mode,
+    String? initialCd,
+  }) async {
     await disconnect();
 
     _currentHost = host;
+    _mode = mode;
+    _pendingCd = initialCd;
     _state = SshConnectionState.connecting;
     _errorMessage = null;
     notifyListeners();
@@ -58,39 +80,65 @@ class SshSession extends ChangeNotifier {
       );
 
       await client.authenticated;
-
-      final shell = await client.shell(
-        pty: const SSHPtyConfig(type: 'xterm-256color', width: 80, height: 24),
-      );
-      final sftp = await client.sftp();
-
       _client = client;
-      _shell = shell;
-      _sftp = sftp;
 
-      _stdoutSub = shell.stdout.listen((data) {
-        _terminalOutputController.add(utf8.decode(data, allowMalformed: true));
-      });
-      _stderrSub = shell.stderr.listen((data) {
-        _terminalOutputController.add(utf8.decode(data, allowMalformed: true));
-      });
-      unawaited(shell.done.then((_) {
-        if (_state == SshConnectionState.connected) {
-          _errorMessage = '远程会话已结束';
-          _state = SshConnectionState.disconnected;
-          notifyListeners();
-        }
-      }));
+      if (mode == SessionMode.terminal) {
+        await _startShell();
+      } else {
+        _sftp = await client.sftp();
+      }
 
       _state = SshConnectionState.connected;
       notifyListeners();
     } catch (e) {
       await _cleanup();
+      _mode = null;
+      _pendingCd = null;
       _state = SshConnectionState.error;
       _errorMessage = _friendlyError(e);
       notifyListeners();
       rethrow;
     }
+  }
+
+  /// 在同一 SSH 连接上从 SFTP 切到终端，并可选 cd 到指定目录。
+  Future<void> switchToTerminal({String? cdPath}) async {
+    final client = _client;
+    if (client == null || _state != SshConnectionState.connected) {
+      throw StateError('当前未连接');
+    }
+
+    await _closeSftpOnly();
+    await _closeShellOnly();
+
+    _pendingCd = cdPath;
+    _mode = SessionMode.terminal;
+    await _startShell();
+    notifyListeners();
+  }
+
+  Future<void> _startShell() async {
+    final client = _client;
+    if (client == null) throw StateError('SSH client missing');
+
+    final shell = await client.shell(
+      pty: const SSHPtyConfig(type: 'xterm-256color', width: 80, height: 24),
+    );
+    _shell = shell;
+    _stdoutSub = shell.stdout.listen((data) {
+      _terminalOutputController.add(utf8.decode(data, allowMalformed: true));
+    });
+    _stderrSub = shell.stderr.listen((data) {
+      _terminalOutputController.add(utf8.decode(data, allowMalformed: true));
+    });
+    unawaited(shell.done.then((_) {
+      if (_state == SshConnectionState.connected &&
+          _mode == SessionMode.terminal) {
+        _errorMessage = '远程会话已结束';
+        _state = SshConnectionState.disconnected;
+        notifyListeners();
+      }
+    }));
   }
 
   void writeToShell(String data) {
@@ -108,27 +156,34 @@ class SshSession extends ChangeNotifier {
 
   Future<void> disconnect() async {
     await _cleanup();
+    _mode = null;
+    _pendingCd = null;
     _state = SshConnectionState.disconnected;
     _errorMessage = null;
     notifyListeners();
   }
 
-  Future<void> _cleanup() async {
+  Future<void> _closeShellOnly() async {
     await _stdoutSub?.cancel();
     await _stderrSub?.cancel();
     _stdoutSub = null;
     _stderrSub = null;
-
     try {
       _shell?.close();
     } catch (_) {}
     _shell = null;
+  }
 
+  Future<void> _closeSftpOnly() async {
     try {
       await _sftp?.close();
     } catch (_) {}
     _sftp = null;
+  }
 
+  Future<void> _cleanup() async {
+    await _closeShellOnly();
+    await _closeSftpOnly();
     try {
       _client?.close();
     } catch (_) {}
