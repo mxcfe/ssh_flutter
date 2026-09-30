@@ -18,3 +18,5 @@ Based on pub.dev `xterm` 4.0.0.
   - Android/touch: pan accepts touch/stylus only while mouse-drag report mode
     is on; after touch-slop it wins over Scrollable (not on pointer-down, so
     taps still open the IME). Listener fallback for pointer move/up.
+- App-side (`LiveTerminal`): handle OSC 52 (`onPrivateOSC`) so tmux/vim
+  mouse copy writes the system clipboard.

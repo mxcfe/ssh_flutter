@@ -234,6 +234,8 @@ class _TabChipState extends State<_TabChip> {
   Widget build(BuildContext context) {
     final sessions = context.read<DesktopSessions>();
     final theme = Theme.of(context);
+    final switching =
+        sessions.layout.tabs[widget.tabId]?.session.modeSwitching ?? false;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
       child: Material(
@@ -245,7 +247,7 @@ class _TabChipState extends State<_TabChip> {
           borderRadius: BorderRadius.circular(8),
           onSecondaryTapUp: (details) => _showMenu(context, details, sessions),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 240),
+            constraints: const BoxConstraints(maxWidth: 280),
             child: Padding(
               padding: const EdgeInsets.only(left: 10),
               child: Row(
@@ -268,7 +270,7 @@ class _TabChipState extends State<_TabChip> {
                           ),
                           const SizedBox(width: 6),
                           ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 160),
+                            constraints: const BoxConstraints(maxWidth: 140),
                             child: ListenableBuilder(
                               listenable: sessions.drag,
                               builder: (context, _) {
@@ -291,6 +293,23 @@ class _TabChipState extends State<_TabChip> {
                   IconButton(
                     visualDensity: VisualDensity.compact,
                     iconSize: 16,
+                    tooltip: widget.sftp ? '切换到终端' : '切换到 SFTP',
+                    onPressed: switching
+                        ? null
+                        : () => _toggleMode(context, sessions),
+                    icon: switching
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(
+                            widget.sftp ? Icons.terminal : Icons.folder_open,
+                          ),
+                  ),
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    iconSize: 16,
                     tooltip: '关闭',
                     onPressed: () =>
                         sessions.closeTab(widget.windowId, widget.tabId),
@@ -303,6 +322,21 @@ class _TabChipState extends State<_TabChip> {
         ),
       ),
     );
+  }
+
+  Future<void> _toggleMode(
+    BuildContext context,
+    DesktopSessions sessions,
+  ) async {
+    sessions.activateTab(widget.windowId, widget.tabId);
+    try {
+      await sessions.toggleTabMode(widget.tabId);
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('切换失败：$e')),
+      );
+    }
   }
 
   Future<void> _showMenu(

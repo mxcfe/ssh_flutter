@@ -28,6 +28,26 @@ void main() {
     expect(identical(layout.tabs[second.activeTabId]!.session, b), isTrue);
   });
 
+  test('addTab attaches a session to an existing window', () {
+    final first = layout.addWindow(SshSession());
+    final attached = SshSession();
+
+    final tab = layout.addTab(first.id, attached);
+
+    expect(tab, isNotNull);
+    expect(layout.windows, hasLength(1));
+    expect(first.tabIds, hasLength(2));
+    expect(first.activeTabId, tab!.id);
+    expect(identical(layout.tabs[tab.id]!.session, attached), isTrue);
+  });
+
+  test('addTab returns null when the window is missing', () {
+    final orphan = SshSession();
+    expect(layout.addTab('missing', orphan), isNull);
+    expect(layout.windows, isEmpty);
+    orphan.dispose();
+  });
+
   test('move one tab into another window and drop the empty source', () {
     final source = layout.addWindow(SshSession());
     final target = layout.addWindow(SshSession());

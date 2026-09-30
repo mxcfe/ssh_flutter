@@ -30,6 +30,8 @@ class SshSession extends ChangeNotifier {
   HostProfile? _currentHost;
   SessionMode? _mode;
   String? _pendingCd;
+  String? _workingDirectory;
+  bool _modeSwitching = false;
 
   final _terminalOutputController = StreamController<String>.broadcast();
 
@@ -41,12 +43,83 @@ class SshSession extends ChangeNotifier {
   SSHSession? get shell => _shell;
   SftpClient? get sftp => _sftp;
   Stream<String> get terminalOutput => _terminalOutputController.stream;
+  String? get workingDirectory => _workingDirectory;
+  bool get hasPendingCd => _pendingCd != null && _pendingCd!.isNotEmpty;
+  bool get modeSwitching => _modeSwitching;
+
+  /// 记录最近一次已知的远程目录（SFTP 浏览或终端 cd）。
+  void noteWorkingDirectory(String? path) {
+    if (path == null) return;
+    final trimmed = path.trim();
+    if (trimmed.isEmpty || trimmed == _workingDirectory) return;
+    _workingDirectory = trimmed;
+  }
 
   /// 取出并清空待执行的 cd 路径（终端启动后调用一次）。
   String? takePendingCd() {
     final path = _pendingCd;
     _pendingCd = null;
+    if (path != null && path.isNotEmpty) {
+      _workingDirectory = path;
+    }
     return path;
+  }
+
+  /// 尽量解析当前远程工作目录：SFTP 用浏览路径，终端则询问 shell 的 pwd。
+  Future<String?> resolveWorkingDirectory() async {
+    if (_mode == SessionMode.sftp) {
+      final path = _workingDirectory;
+      final client = _sftp;
+      if (client != null && path != null && path.isNotEmpty) {
+        try {
+          final absolute = await client.absolute(path);
+          _workingDirectory = absolute;
+          return absolute;
+        } catch (_) {
+          return path;
+        }
+      }
+      return path;
+    }
+
+    if (_mode != SessionMode.terminal || _shell == null) {
+      return _workingDirectory;
+    }
+
+    final token = '__MXC_PWD_${DateTime.now().microsecondsSinceEpoch}__';
+    final completer = Completer<String?>();
+    final buffer = StringBuffer();
+    late final StreamSubscription<String> sub;
+    sub = _terminalOutputController.stream.listen((chunk) {
+      buffer.write(chunk);
+      final text = buffer.toString();
+      final start = text.indexOf(token);
+      if (start < 0) return;
+      final mid = start + token.length;
+      final end = text.indexOf(token, mid);
+      if (end < 0) return;
+      final path = text
+          .substring(mid, end)
+          .replaceAll(RegExp(r'[\r\n]'), '')
+          .trim();
+      if (!completer.isCompleted) {
+        completer.complete(path.isEmpty ? null : path);
+      }
+    });
+    try {
+      writeToShell("printf '%s%s%s\\n' '$token' \"\$(pwd)\" '$token'\n");
+      final path = await completer.future.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => null,
+      );
+      if (path != null) {
+        _workingDirectory = path;
+        return path;
+      }
+    } finally {
+      await sub.cancel();
+    }
+    return _workingDirectory;
   }
 
   Future<void> connect(
@@ -60,6 +133,9 @@ class SshSession extends ChangeNotifier {
     _currentHost = host;
     _mode = mode;
     _pendingCd = initialCd;
+    if (initialCd != null && initialCd.isNotEmpty) {
+      _workingDirectory = initialCd;
+    }
     _state = SshConnectionState.connecting;
     _errorMessage = null;
     notifyListeners();
@@ -94,6 +170,7 @@ class SshSession extends ChangeNotifier {
       await _cleanup();
       _mode = null;
       _pendingCd = null;
+      _workingDirectory = null;
       _state = SshConnectionState.error;
       _errorMessage = _friendlyError(e);
       notifyListeners();
@@ -107,14 +184,48 @@ class SshSession extends ChangeNotifier {
     if (client == null || _state != SshConnectionState.connected) {
       throw StateError('当前未连接');
     }
+    if (_modeSwitching) return;
 
-    await _closeSftpOnly();
-    await _closeShellOnly();
-
-    _pendingCd = cdPath;
-    _mode = SessionMode.terminal;
-    await _startShell();
+    _modeSwitching = true;
     notifyListeners();
+    try {
+      await _closeSftpOnly();
+      await _closeShellOnly();
+
+      if (cdPath != null && cdPath.isNotEmpty) {
+        _pendingCd = cdPath;
+        _workingDirectory = cdPath;
+      }
+      _mode = SessionMode.terminal;
+      await _startShell();
+    } finally {
+      _modeSwitching = false;
+      notifyListeners();
+    }
+  }
+
+  /// 在同一 SSH 连接上从终端切到 SFTP，并打开指定目录。
+  Future<void> switchToSftp({String? initialPath}) async {
+    final client = _client;
+    if (client == null || _state != SshConnectionState.connected) {
+      throw StateError('当前未连接');
+    }
+    if (_modeSwitching) return;
+
+    _modeSwitching = true;
+    notifyListeners();
+    try {
+      await _closeShellOnly();
+      await _closeSftpOnly();
+      _sftp = await client.sftp();
+      if (initialPath != null && initialPath.isNotEmpty) {
+        _workingDirectory = initialPath;
+      }
+      _mode = SessionMode.sftp;
+    } finally {
+      _modeSwitching = false;
+      notifyListeners();
+    }
   }
 
   Future<void> _startShell() async {
@@ -158,6 +269,8 @@ class SshSession extends ChangeNotifier {
     await _cleanup();
     _mode = null;
     _pendingCd = null;
+    _workingDirectory = null;
+    _modeSwitching = false;
     _state = SshConnectionState.disconnected;
     _errorMessage = null;
     notifyListeners();

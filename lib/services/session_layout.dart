@@ -52,6 +52,17 @@ class SessionLayout {
     return window;
   }
 
+  /// 在已有窗口追加页签并激活。窗口不存在时返回 null。
+  SessionTab? addTab(String windowId, SshSession session) {
+    final window = find(windowId);
+    if (window == null) return null;
+    final tab = SessionTab(id: _newId(), session: session);
+    tabs[tab.id] = tab;
+    window.tabIds.add(tab.id);
+    window.activeTabId = tab.id;
+    return tab;
+  }
+
   void activate(String windowId, String tabId) {
     final window = find(windowId);
     if (window == null || !window.tabIds.contains(tabId)) return;

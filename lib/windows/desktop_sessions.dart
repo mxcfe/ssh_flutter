@@ -71,6 +71,8 @@ class DesktopSessions extends ChangeNotifier {
   final TabDragModel drag = TabDragModel();
   WindowRegistry? _registry;
   bool _applyingDrag = false;
+  /// 新建连接优先并入这个窗口（最近激活的终端窗）。
+  String? _preferredWindowId;
 
   LiveTerminal terminalFor(String tabId, SshSession session) {
     return _terminals.putIfAbsent(tabId, () => LiveTerminal(session));
@@ -87,6 +89,20 @@ class DesktopSessions extends ChangeNotifier {
     if (registry == null) {
       throw StateError('窗口注册表未就绪');
     }
+
+    final targetId = _existingTargetWindowId();
+    if (targetId != null) {
+      final tab = layout.addTab(targetId, session);
+      if (tab != null) {
+        session.addListener(_onSessionChanged);
+        _preferredWindowId = targetId;
+        _syncTitles();
+        notifyListeners();
+        _activateLater(targetId);
+        return;
+      }
+    }
+
     final window = layout.addWindow(session);
     session.addListener(_onSessionChanged);
     try {
@@ -99,14 +115,40 @@ class DesktopSessions extends ChangeNotifier {
       _destroyNativeOnly(window.id);
       rethrow;
     }
+    _preferredWindowId = window.id;
     notifyListeners();
     _activateLater(window.id);
   }
 
+  String? _existingTargetWindowId() {
+    final preferred = _preferredWindowId;
+    if (preferred != null && layout.find(preferred) != null) {
+      return preferred;
+    }
+    if (layout.windows.isEmpty) return null;
+    return layout.windows.last.id;
+  }
+
   void activateTab(String windowId, String tabId) {
     layout.activate(windowId, tabId);
+    _preferredWindowId = windowId;
     _syncTitles();
     notifyListeners();
+  }
+
+  /// 在同一连接上按当前目录切换终端 / SFTP。
+  Future<void> toggleTabMode(String tabId) async {
+    final tab = layout.tabs[tabId];
+    if (tab == null || !tab.session.isConnected || tab.session.modeSwitching) {
+      return;
+    }
+    final session = tab.session;
+    final path = await session.resolveWorkingDirectory();
+    if (session.mode == SessionMode.sftp) {
+      await session.switchToTerminal(cdPath: path);
+    } else {
+      await session.switchToSftp(initialPath: path);
+    }
   }
 
   void beginTabDrag({
@@ -160,9 +202,11 @@ class DesktopSessions extends ChangeNotifier {
   Future<void> moveTabToWindow(String tabId, String targetWindowId) async {
     final removed = layout.moveTabTo(tabId, targetWindowId);
     if (removed != null) {
+      if (_preferredWindowId == removed) _preferredWindowId = targetWindowId;
       _destroyNativeOnly(removed);
       await _afterFrame();
     }
+    _preferredWindowId = targetWindowId;
     _syncTitles();
     notifyListeners();
   }
@@ -212,13 +256,16 @@ class DesktopSessions extends ChangeNotifier {
     _native[created.id] = native;
     registry.register(native.entry);
     notifyListeners();
+    _preferredWindowId = created.id;
     _activateLater(created.id);
   }
 
   Future<void> mergeInto(String sourceId, String targetId) async {
     if (!layout.mergeInto(sourceId, targetId)) return;
+    if (_preferredWindowId == sourceId) _preferredWindowId = targetId;
     _destroyNativeOnly(sourceId);
     await _afterFrame();
+    _preferredWindowId = targetId;
     _syncTitles();
     notifyListeners();
   }
@@ -227,9 +274,11 @@ class DesktopSessions extends ChangeNotifier {
     final removed = layout.mergeAllInto(targetId);
     if (removed.isEmpty) return;
     for (final id in removed) {
+      if (_preferredWindowId == id) _preferredWindowId = targetId;
       _destroyNativeOnly(id);
     }
     await _afterFrame();
+    _preferredWindowId = targetId;
     _syncTitles();
     notifyListeners();
   }
@@ -239,6 +288,10 @@ class DesktopSessions extends ChangeNotifier {
     if (result == null) return;
     result.tab.session.removeListener(_onSessionChanged);
     if (result.windowRemoved) {
+      if (_preferredWindowId == windowId) {
+        _preferredWindowId =
+            layout.windows.isEmpty ? null : layout.windows.last.id;
+      }
       _destroyNativeOnly(windowId);
     } else {
       _syncTitles();
@@ -254,6 +307,10 @@ class DesktopSessions extends ChangeNotifier {
     final tabs = layout.removeWindow(windowId);
     for (final tab in tabs) {
       tab.session.removeListener(_onSessionChanged);
+    }
+    if (_preferredWindowId == windowId) {
+      _preferredWindowId =
+          layout.windows.isEmpty ? null : layout.windows.last.id;
     }
     _registry?.unregister(native.entry);
     notifyListeners();
@@ -272,6 +329,7 @@ class DesktopSessions extends ChangeNotifier {
     for (final tab in pending) {
       tab.session.removeListener(_onSessionChanged);
     }
+    _preferredWindowId = null;
     notifyListeners();
     await Future.wait(pending.map(_release));
   }

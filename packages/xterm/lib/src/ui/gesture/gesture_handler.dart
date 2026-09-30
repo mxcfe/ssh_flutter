@@ -240,11 +240,12 @@ class _TerminalGestureHandlerState extends State<TerminalGestureHandler> {
     if (!_mouseDragActive) {
       return;
     }
-    // Pan wins over Tap, so onSingleTapUp never fires — send button-up here.
+    // Pan wins over Tap, so onSingleTapUp never fires — always send button-up
+    // so apps like tmux can finalize mouse selection and emit OSC 52.
     final offset = localPosition ??
         _lastMouseDragLocalPosition ??
         _lastDragStartDetails?.localPosition;
-    if (offset != null && _shouldSendTapEvent) {
+    if (offset != null) {
       renderTerminal.mouseEvent(
         TerminalMouseButton.left,
         TerminalMouseButtonState.up,

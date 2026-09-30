@@ -24,13 +24,16 @@ class _SftpBrowserState extends State<SftpBrowser> {
   double? _transferProgress;
   late final TextEditingController _pathController;
   final FocusNode _pathFocus = FocusNode();
-  bool _openingTerminal = false;
 
   @override
   void initState() {
     super.initState();
     _pathController = TextEditingController(text: _currentPath);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadDir());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final start = context.read<SshSession>().workingDirectory ?? '.';
+      _loadDir(start);
+    });
   }
 
   @override
@@ -100,6 +103,7 @@ class _SftpBrowserState extends State<SftpBrowser> {
         _loading = false;
       });
       _syncPathBar(target);
+      context.read<SshSession>().noteWorkingDirectory(target);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -232,31 +236,6 @@ class _SftpBrowserState extends State<SftpBrowser> {
     if (path.isEmpty) return;
     _pathFocus.unfocus();
     await _loadDir(path);
-  }
-
-  Future<void> _openTerminalHere() async {
-    if (_openingTerminal) return;
-    final session = context.read<SshSession>();
-    final sftp = session.sftp;
-    if (sftp == null) return;
-
-    setState(() => _openingTerminal = true);
-    try {
-      String cdPath = _currentPath;
-      try {
-        cdPath = await sftp.absolute(_currentPath);
-      } catch (_) {
-        // 解析失败则仍用当前路径
-      }
-      await session.switchToTerminal(cdPath: cdPath);
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('打开终端失败：$e')),
-      );
-    } finally {
-      if (mounted) setState(() => _openingTerminal = false);
-    }
   }
 
   Future<void> _mkdir() async {
@@ -416,27 +395,9 @@ class _SftpBrowserState extends State<SftpBrowser> {
                   ),
                 ),
                 IconButton(
-                  tooltip: '跳转到输入路径',
-                  onPressed: _loading ? null : _jumpToPath,
-                  icon: const Icon(Icons.subdirectory_arrow_right),
-                ),
-                IconButton(
                   tooltip: '新建文件夹',
                   onPressed: _loading ? null : _mkdir,
                   icon: const Icon(Icons.create_new_folder_outlined),
-                ),
-                IconButton(
-                  tooltip: '在此目录打开终端',
-                  onPressed: (_loading || _openingTerminal)
-                      ? null
-                      : _openTerminalHere,
-                  icon: _openingTerminal
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.terminal),
                 ),
                 IconButton(
                   tooltip: '上传',
