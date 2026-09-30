@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -7,25 +6,30 @@ import 'package:provider/provider.dart';
 import 'package:xterm/xterm.dart';
 
 import '../services/ssh_session.dart';
+import 'live_terminal.dart';
 import 'terminal_extra_keys.dart';
 
 class AppTerminalView extends StatefulWidget {
-  const AppTerminalView({super.key});
+  const AppTerminalView({super.key, this.active = true, this.shared});
+
+  /// 页签被挡住时不抢焦点，切回来再聚焦。
+  final bool active;
+
+  /// 由窗口托管时复用同一缓冲，避免合并/拆分后输出丢失。
+  final LiveTerminal? shared;
 
   @override
   State<AppTerminalView> createState() => _AppTerminalViewState();
 }
 
 class _AppTerminalViewState extends State<AppTerminalView> {
-  late final Terminal _terminal;
-  late final TerminalController _terminalController;
-  late final TerminalModifiers _modifiers;
+  LiveTerminal? _owned;
+  LiveTerminal? _live;
   late final FocusNode _focusNode;
   final GlobalKey<TerminalViewState> _terminalViewKey =
       GlobalKey<TerminalViewState>();
-  StreamSubscription<String>? _outputSub;
-  SshSession? _session;
-  bool _didSendPendingCd = false;
+
+  LiveTerminal get _terminalHost => _live!;
 
   bool get _isAndroid => !kIsWeb && Platform.isAndroid;
 
@@ -33,46 +37,22 @@ class _AppTerminalViewState extends State<AppTerminalView> {
   void initState() {
     super.initState();
     _focusNode = FocusNode(debugLabel: 'ssh_terminal');
-    _modifiers = TerminalModifiers();
-    // Enable tap/scroll/drag so apps like tmux can receive mouse reports
-    // (pane resize requires drag motion with button held).
-    _terminalController = TerminalController(
-      pointerInputs: const PointerInputs({
-        PointerInput.tap,
-        PointerInput.scroll,
-        PointerInput.drag,
-      }),
-    );
-    _terminal = Terminal(
-      maxLines: 10000,
-      inputHandler: _modifiers,
-      onOutput: (data) {
-        _session?.writeToShell(data);
-      },
-      onResize: (width, height, pixelWidth, pixelHeight) {
-        _session?.resizeTerminal(width, height, pixelWidth, pixelHeight);
-      },
-    );
+    _live = widget.shared;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _focusNode.requestFocus();
-      _sendPendingCdIfNeeded();
-    });
-  }
-
-  String _shellQuote(String path) {
-    return "'${path.replaceAll("'", "'\\''")}'";
-  }
-
-  void _sendPendingCdIfNeeded() {
-    if (_didSendPendingCd) return;
-    final session = _session ?? context.read<SshSession>();
-    final path = session.takePendingCd();
-    if (path == null || path.isEmpty) return;
-    _didSendPendingCd = true;
-    Future<void>.delayed(const Duration(milliseconds: 350), () {
       if (!mounted) return;
-      session.writeToShell('cd ${_shellQuote(path)}\n');
+      if (widget.active) _focusNode.requestFocus();
     });
+  }
+
+  @override
+  void didUpdateWidget(AppTerminalView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.shared != null) {
+      _live = widget.shared;
+    }
+    if (widget.active && !oldWidget.active) {
+      _focusNode.requestFocus();
+    }
   }
 
   void _toggleKeyboard() {
@@ -90,23 +70,14 @@ class _AppTerminalViewState extends State<AppTerminalView> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final session = context.read<SshSession>();
-    if (!identical(_session, session)) {
-      _outputSub?.cancel();
-      _session = session;
-      _outputSub = session.terminalOutput.listen((data) {
-        _terminal.write(data);
-      });
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _sendPendingCdIfNeeded();
-      });
-    }
+    if (_live != null) return;
+    _owned = LiveTerminal(context.read<SshSession>());
+    _live = _owned;
   }
 
   @override
   void dispose() {
-    _outputSub?.cancel();
-    _modifiers.dispose();
+    _owned?.dispose();
     _focusNode.dispose();
     super.dispose();
   }
@@ -143,10 +114,11 @@ class _AppTerminalViewState extends State<AppTerminalView> {
   Widget build(BuildContext context) {
     final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
+    final host = _terminalHost;
     final terminal = TerminalView(
-      _terminal,
+      host.terminal,
       key: _terminalViewKey,
-      controller: _terminalController,
+      controller: host.controller,
       focusNode: _focusNode,
       autofocus: false,
       hardwareKeyboardOnly: false,
@@ -174,8 +146,8 @@ class _AppTerminalViewState extends State<AppTerminalView> {
         children: [
           Expanded(child: terminal),
           TerminalExtraKeysBar(
-            terminal: _terminal,
-            modifiers: _modifiers,
+            terminal: host.terminal,
+            modifiers: host.modifiers,
             onToggleKeyboard: _toggleKeyboard,
           ),
         ],

@@ -4,6 +4,8 @@ import 'package:provider/provider.dart';
 import '../models/host_profile.dart';
 import '../providers/app_providers.dart';
 import '../services/ssh_session.dart';
+import '../windows/desktop_sessions.dart';
+import '../windows/windowing.dart';
 import 'host_edit_screen.dart';
 import 'session_screen.dart';
 
@@ -15,6 +17,7 @@ class HostListScreen extends StatefulWidget {
 }
 
 class _HostListScreenState extends State<HostListScreen> {
+  String? _connectingId;
   @override
   void initState() {
     super.initState();
@@ -109,44 +112,46 @@ class _HostListScreenState extends State<HostListScreen> {
 
   Future<void> _connect(HostProfile host, SessionMode mode) async {
     final password = await _resolvePassword(host);
-    if (password == null || !mounted) return;
+    if (password == null || !mounted || _connectingId != null) return;
 
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => const Center(
-        child: Card(
-          child: Padding(
-            padding: EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                CircularProgressIndicator(),
-                SizedBox(height: 16),
-                Text('正在连接...'),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-
-    final session = context.read<SshSession>();
+    setState(() => _connectingId = host.id);
+    final session = SshSession();
+    var handedOff = false;
     try {
       await session.connect(host, password, mode: mode);
-      if (!mounted) return;
-      Navigator.of(context).pop();
+      if (!mounted) {
+        await session.disconnect();
+        session.dispose();
+        return;
+      }
+      if (desktopWindowingEnabled) {
+        context.read<DesktopSessions>().openWindow(session);
+        handedOff = true;
+        return;
+      }
       await Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => SessionScreen(mode: mode)),
+        MaterialPageRoute(
+          builder: (_) => ChangeNotifierProvider<SshSession>.value(
+            value: session,
+            child: SessionScreen(mode: mode),
+          ),
+        ),
       );
       await session.disconnect();
+      session.dispose();
     } catch (e) {
-      if (!mounted) return;
-      Navigator.of(context).pop();
-      final message = session.errorMessage ?? e.toString();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
+      if (mounted) {
+        final message = session.errorMessage ?? e.toString();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message)),
+        );
+      }
+      if (!handedOff) {
+        await session.disconnect();
+        session.dispose();
+      }
+    } finally {
+      if (mounted) setState(() => _connectingId = null);
     }
   }
 
@@ -220,19 +225,35 @@ class _HostListScreenState extends State<HostListScreen> {
         separatorBuilder: (_, _) => const SizedBox(height: 8),
         itemBuilder: (context, index) {
           final host = controller.hosts[index];
+          final connecting = _connectingId == host.id;
           return Card(
             child: ListTile(
-              leading: const CircleAvatar(child: Icon(Icons.computer)),
+              leading: connecting
+                  ? const SizedBox(
+                      width: 40,
+                      height: 40,
+                      child: Padding(
+                        padding: EdgeInsets.all(8),
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : const CircleAvatar(child: Icon(Icons.computer)),
               title: Text(host.displayTitle),
-              subtitle: Text(host.subtitle),
-              onTap: () => _connect(host, SessionMode.terminal),
+              subtitle: Text(connecting ? '正在连接...' : host.subtitle),
+              onTap: connecting
+                  ? null
+                  : () => _connect(host, SessionMode.terminal),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   IconButton(
-                    tooltip: 'SFTP 文件管理',
+                    tooltip: desktopWindowingEnabled
+                        ? '在新窗口打开 SFTP'
+                        : 'SFTP 文件管理',
                     icon: const Icon(Icons.folder_open),
-                    onPressed: () => _connect(host, SessionMode.sftp),
+                    onPressed: connecting
+                        ? null
+                        : () => _connect(host, SessionMode.sftp),
                   ),
                   PopupMenuButton<String>(
                     onSelected: (value) {
